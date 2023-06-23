@@ -7,4 +7,5 @@ project(librdmapp LANGUAGES CXX)
 
 #TODO: Add numa,rdma,ib as deps
 
-add_library(librdmapp STATIC ./rdmapp/*.*pp)
+file(GLOB SRC_FILES ./rdmapp/*.cpp)
+add_library(librdmapp STATIC ${SRC_FILES})
