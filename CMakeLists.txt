@@ -5,7 +5,10 @@ set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 
 project(librdmapp LANGUAGES CXX)
 
-#TODO: Add numa,rdma,ib as deps
+find_package(Threads REQUIRED)
+
+include_directories(${NUMA_PATH}/**)
 
 file(GLOB SRC_FILES ./rdmapp/*.cpp)
-add_library(librdmapp STATIC ${SRC_FILES})
+add_library(rdmapp STATIC ${SRC_FILES})
+
