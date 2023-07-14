@@ -2,6 +2,7 @@
 #include "rdma.hpp"
 
 #include <iostream>
+#include <cassert>
 
 
 struct EventHandler : public rdma::EventHandler {
@@ -23,13 +24,13 @@ struct EventHandler : public rdma::EventHandler {
     }
 };
 
-
 int main(int argc [[maybe_unused]], char** argv [[maybe_unused]]) {
+    constexpr const char* address = "172.18.94.10";
     constexpr size_t size = 65536;
     void* mem = malloc(size);
     rdma::check_ptr(mem);
 
-    rdma::RDMA server{"192.168.101.208", 7471};
+    rdma::RDMA server{address, 7471};
     std::cout << "NIC located on socket: " << server.numa_socket << "\n";
     server.handler = std::make_unique<EventHandler>(mem);
     server.register_memory(mem, size);
@@ -39,14 +40,14 @@ int main(int argc [[maybe_unused]], char** argv [[maybe_unused]]) {
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     {
-        rdma::RDMA client{"192.168.101.208", 7471};
+        rdma::RDMA client{address, 7471};
         void* mem = malloc(size);
         rdma::check_ptr(mem);
         client.register_memory(mem, size); // use std::span?
 
-        uint64_t* value = reinterpret_cast<uint64_t*>(mem);
+        auto* value = reinterpret_cast<uint64_t*>(mem);
 
-        auto conn = client.connect_to("192.168.101.208", 7471);
+        auto conn = client.connect_to(address, 7471);
         // conn->init_msg.as<uint8_t>();
 
         *value = 0x1234567812345678;
@@ -71,12 +72,18 @@ int main(int argc [[maybe_unused]], char** argv [[maybe_unused]]) {
         conn->poll_cq(1);
         std::cout << "fetch_add value=0x" << std::hex << *value << std::dec << "\n";
 
+        // write value to server
+        *value = 0x1234567812345678;
+//        conn->write_sync(value, sizeof(uint64_t), 0);
+
 
         client.close(conn);
         free(mem);
     }
 
     server.wait();
+
+//    assert(*static_cast<uint64_t *>(mem) == 0x1234567812345678);
 
     free(mem);
 
