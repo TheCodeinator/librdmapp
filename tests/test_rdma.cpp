@@ -1,8 +1,7 @@
-#include "my_asserts.hpp"
-#include "rdma.hpp"
+#include "rdmapp/my_asserts.hpp"
+#include "rdmapp/rdma.hpp"
 
 #include <iostream>
-#include <cassert>
 
 
 struct EventHandler : public rdma::EventHandler {
@@ -19,62 +18,88 @@ struct EventHandler : public rdma::EventHandler {
         // same info but state of conn is DISCONNECTED
         std::cout << "on_disconnect\n";
 
-        uint64_t* value = reinterpret_cast<uint64_t*>(mem);
-        std::cout << "server value=0x" << std::hex << *value << std::dec << "\n";
+        // uint64_t* value = reinterpret_cast<uint64_t*>(mem);
+        // std::cout << "server value=0x" << std::hex << *value << std::dec << "\n";
     }
 };
 
-int main(int argc [[maybe_unused]], char** argv [[maybe_unused]]) {
-    constexpr const char* address = "172.18.94.10";
-    constexpr size_t size = 65536;
-    void* mem = malloc(size);
-    rdma::check_ptr(mem);
+std::string IP = "172.18.94.20";
 
-    rdma::RDMA server{address, 7471};
+int main(int argc [[maybe_unused]], char** argv [[maybe_unused]]) {
+    constexpr size_t size = 65536;
+    void* s_mem = malloc(size);
+    rdma::check_ptr(s_mem);
+
+    rdma::RDMA server{IP, 7471};
     std::cout << "NIC located on socket: " << server.numa_socket << "\n";
-    server.handler = std::make_unique<EventHandler>(mem);
-    server.register_memory(mem, size);
+    server.handler = std::make_unique<EventHandler>(s_mem);
+    server.register_memory(s_mem, size);
 
     server.listen(rdma::RDMA::CLOSE_AFTER_LAST | rdma::RDMA::IN_BACKGROUND);
 
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     {
-        rdma::RDMA client{address, 7471};
+        rdma::RDMA client{IP, 0};
         void* mem = malloc(size);
         rdma::check_ptr(mem);
         client.register_memory(mem, size); // use std::span?
 
-        auto* value = reinterpret_cast<uint64_t*>(mem);
+        uint64_t* c_values = reinterpret_cast<uint64_t*>(mem);
+        uint64_t* s_values = reinterpret_cast<uint64_t*>(s_mem);
 
-        auto conn = client.connect_to(address, 7471);
+        auto conn = client.connect_to(IP, 7471);
         // conn->init_msg.as<uint8_t>();
 
-        *value = 0x1234567812345678;
-        conn->write_sync(value, sizeof(uint64_t), 0);
+        *c_values = 0x1234567812345678;
+        conn->write(c_values, sizeof(uint64_t), 0, rdma::Flags().signaled());
+        conn->sync_signaled(1);
+        rdma::ensure(s_values[0] == c_values[0]);
+
+        uint64_t desired = 0;
+        conn->cmp_swap(&c_values[1], 0x1234567812345678, desired, 0, rdma::Flags().signaled());
+        conn->sync_signaled(1);
+        rdma::ensure(s_values[0] == desired, "Server-side value does not match expected");
+        rdma::ensure(c_values[1] == 0x1234567812345678, "Client-side value does not match expected");
 
 
-        conn->cmp_swap_sync(value, 0x1234567812345678, 0, 0);
-        std::cout << "expected value=0x" << std::hex << *value << std::dec << "\n";
+        conn->fetch_add(c_values, 0x44445555, 0, rdma::Flags().signaled());
+        conn->sync_signaled(1);
+        rdma::ensure(s_values[0] == 0x44445555, "Server-side value does not match expected");
 
+        c_values[0] = 0;
+        conn->read(c_values, sizeof(uint64_t), 0, rdma::Flags().signaled());
+        conn->sync_signaled(1);
+        rdma::ensure(c_values[0] == 0x44445555, "Server-side value does not match expected");
 
-        conn->fetch_add_sync(value, 0x44445555, 0);
-        std::cout << "expected value=0x" << std::hex << *value << std::dec << "\n";
-
-        *value = 0;
-        conn->read_sync(value, sizeof(uint64_t), 0);
-        std::cout << "read value=0x" << std::hex << *value << std::dec << "\n";
-
-
-        for (size_t i = 0; i < conn->max_wr; ++i) {
-            conn->fetch_add(value, 1, 0);
+        for (size_t i = 0; i < conn->max_wr - 1; ++i) {
+            conn->fetch_add(c_values, 1, 0);
         }
-        conn->poll_cq(1);
-        std::cout << "fetch_add value=0x" << std::hex << *value << std::dec << "\n";
+        conn->fetch_add(c_values, 1, 0, rdma::Flags().signaled());
+        conn->sync_signaled(1);
+        rdma::ensure(s_values[0] == 0x44445555 + conn->max_wr, "Server-side value does not match expected");
 
-        // write value to server
-        *value = 0x1234567812345678;
-//        conn->write_sync(value, sizeof(uint64_t), 0);
+
+        // async. operations examples
+        *c_values = 0x1234567812345678;
+        conn->write(c_values, sizeof(uint64_t), 0, rdma::Flags().signaled());  // op 0
+        conn->write(c_values, sizeof(uint64_t), 8);                            // op 1
+        conn->write(c_values, sizeof(uint64_t), 16, rdma::Flags().signaled()); // op 2
+        conn->write(c_values, sizeof(uint64_t), 24);                           // op 3
+        conn->sync_signaled(1);                                                // synchronizes on op 0
+        conn->sync_signaled(1);                                                // synchronizes on op 2
+        rdma::ensure(s_values[0] == c_values[0]);
+        rdma::ensure(s_values[2] == c_values[0]);
+
+
+        *c_values = 0xabcdef;
+        conn->write(c_values, sizeof(uint64_t), 0, rdma::Flags().signaled());  // op 0
+        conn->write(c_values, sizeof(uint64_t), 8);                            // op 1
+        conn->write(c_values, sizeof(uint64_t), 16);                           // op 2
+        conn->write(c_values, sizeof(uint64_t), 24, rdma::Flags().signaled()); // op 3
+        conn->sync_signaled();                                                 // synchronizes on all signaled operations (i.e., 0 & 3)
+        rdma::ensure(s_values[0] == c_values[0]);
+        rdma::ensure(s_values[3] == c_values[0]);
 
 
         client.close(conn);
@@ -83,9 +108,9 @@ int main(int argc [[maybe_unused]], char** argv [[maybe_unused]]) {
 
     server.wait();
 
-//    assert(*static_cast<uint64_t *>(mem) == 0x1234567812345678);
+    free(s_mem);
 
-    free(mem);
+    std::cout << "Test concluded successfully!" << std::endl;
 
     return 0;
 }
