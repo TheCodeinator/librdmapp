@@ -1,5 +1,5 @@
-#include "rdmapp/my_asserts.hpp"
-#include "rdmapp/rdma.hpp"
+#include "my_asserts.hpp"
+#include "rdma.hpp"
 
 #include <iostream>
 
