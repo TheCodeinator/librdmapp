@@ -12,5 +12,7 @@ include_directories(${NUMA_PATH}/**)
 file(GLOB SRC_FILES ./rdmapp/*.cpp)
 add_library(rdmapp STATIC ${SRC_FILES})
 
+target_link_libraries(rdmapp -pthread -libverbs -lrdmacm)
+
 # add tests
 add_subdirectory(tests)
